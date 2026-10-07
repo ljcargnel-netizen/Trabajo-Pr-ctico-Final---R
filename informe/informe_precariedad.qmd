@@ -1,14 +1,24 @@
 ---
 title: "Trabajo Práctico Final"
-subtitle: "Análisis de la EPH en Argentina"
-author: "Lucas Cargnel"
+subtitle: "Un análisis de la precariedad laboral en la población asalariada urbana de Argentina"
+author: "Lucas José Cargnel"
+lang: es
 format: pdf
 fontsize: 11pt
-geometry: margin=1in
+geometry: margin=0.7in
+header-includes:
+  - \setlength{\textfloatsep}{10pt plus 3pt minus 3pt}
+  - \setlength{\intextsep}{10pt plus 3pt minus 3pt}
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.height = 4,
+  fig.width = 6.2
+)
 
 library(tidyverse)
 library(readxl)
@@ -18,8 +28,59 @@ library(ggplot2)
 archivo <- "../resultados/indicadores_precariedad.xlsx"
 archivo_log <- "../resultados/log_ejecuciones.csv"
 
+columnas_requeridas <- list(
+  Resumen_General = c(
+    "casos_muestrales", "poblacion_asalariada",
+    "precarios_ponderados", "tasa_precariedad"
+  ),
+  Por_Sexo_y_Edad = c(
+    "sexo", "grupo_etario", "casos_muestrales",
+    "poblacion_asalariada", "precarios_ponderados", "tasa_precariedad"
+  ),
+  Por_Nivel_Educativo = c(
+    "nivel_educativo", "casos_muestrales", "poblacion_asalariada",
+    "precarios_ponderados", "tasa_precariedad"
+  ),
+  Por_Tamano_Empresa = c(
+    "tamano_establec", "casos_muestrales", "poblacion_asalariada",
+    "precarios_ponderados", "tasa_precariedad"
+  ),
+  Por_Aglomerado = c(
+    "nom_aglo", "casos_muestrales", "poblacion_asalariada",
+    "precarios_ponderados", "tasa_precariedad"
+  )
+)
+
+hojas_disponibles <- excel_sheets(archivo)
+hojas_faltantes <- setdiff(names(columnas_requeridas), hojas_disponibles)
+if (length(hojas_faltantes) > 0) {
+  stop(
+    "El Excel de indicadores está desactualizado (faltan hojas: ",
+    paste(hojas_faltantes, collapse = ", "),
+    "). Vuelva a ejecutar procesamiento.R antes de renderizar."
+  )
+}
+
+columnas_faltantes <- unlist(lapply(names(columnas_requeridas), function(hoja) {
+  faltantes <- setdiff(
+    columnas_requeridas[[hoja]],
+    names(read_excel(archivo, sheet = hoja, n_max = 0))
+  )
+  if (length(faltantes) > 0) {
+    paste0(hoja, ": ", paste(faltantes, collapse = ", "))
+  }
+}))
+if (length(columnas_faltantes) > 0) {
+  stop(
+    "El Excel de indicadores tiene un esquema desactualizado (",
+    paste(columnas_faltantes, collapse = "; "),
+    "). Vuelva a ejecutar procesamiento.R antes de renderizar."
+  )
+}
+
 tasa_general <- read_excel(archivo, sheet = "Resumen_General")
 tasa_demografica <- read_excel(archivo, sheet = "Por_Sexo_y_Edad")
+tasa_educacion <- read_excel(archivo, sheet = "Por_Nivel_Educativo")
 tasa_tamano <- read_excel(archivo, sheet = "Por_Tamano_Empresa")
 tasa_aglomerado <- read_excel(archivo, sheet = "Por_Aglomerado")
 registro_ejecucion <- if (file.exists(archivo_log)) {
@@ -27,130 +88,411 @@ registro_ejecucion <- if (file.exists(archivo_log)) {
 } else {
   tibble()
 }
+
+formatear_conteo <- function(x) {
+  format(round(x), big.mark = ".", decimal.mark = ",", scientific = FALSE)
+}
+
+formatear_porcentaje <- function(x) {
+  percent(x, accuracy = 0.1, decimal.mark = ",")
+}
 ```
 
-## 1. Introducción y Objetivos
+## 1. Introducción y objetivo
 
-El presente informe analiza la precariedad laboral de la población ocupada asalariada en Argentina a partir de los microdatos de la Encuesta Permanente de Hogares (EPH-INDEC). Se considera precario al empleo asalariado sin descuento jubilatorio (variable PP07H).
+Este informe describe la precariedad laboral entre las personas ocupadas asalariadas relevadas por la Encuesta Permanente de Hogares (EPH) del INDEC. Para este análisis, se considera precario el puesto asalariado en el que no se declara descuento jubilatorio. El objetivo es estimar su incidencia general y comparar las tasas entre grupos de edad, sexo, nivel educativo, tamaño del establecimiento y aglomerado.
 
-## Datos y metodología
+## 2. Datos, universo y metodología
 
-El procesamiento combina los archivos CSV y Excel disponibles en la carpeta `bases/`. Si no encuentra archivos, obtiene los microdatos del cuarto trimestre de 2024 mediante la API del paquete `eph`. Luego identifica a la población ocupada asalariada, recodifica las variables de análisis y calcula tasas ponderadas con el factor de expansión `PONDERA`.
+La unidad de análisis es la persona ocupada asalariada. El universo se identifica con `ESTADO = 1` (ocupado) y `CAT_OCUP = 3` (obrero o empleado). Para estimar cantidades poblacionales se usa el factor de expansión individual `PONDERA`. La tasa se calcula como:
 
-La última ejecución registrada por el script es:
+$$
+\text{Tasa (\%)} =
+\frac{\sum_i \text{PONDERA}_i\, I(\text{PP07H}_i=2)}
+{\sum_i \text{PONDERA}_i\, I(\text{PP07H}_i \in \{1,2\})}
+\times 100
+$$
 
-```{r}
+Los valores de `PP07H` iguales a 1 (sí tiene descuento) y 2 (no tiene descuento) definen, respectivamente, empleo registrado y precario. Los casos sin respuesta válida no se clasifican como registrados: se excluyen del denominador. Las poblaciones de las tablas son estimaciones expandidas; `casos_muestrales` informa la cantidad de observaciones de la muestra que contribuye a cada cálculo.
+
+Las variables utilizadas se interpretan de la siguiente manera:
+
+- **Universo (`ESTADO`, `CAT_OCUP`):** `ESTADO = 1` identifica ocupados y `CAT_OCUP = 3`, obreros o empleados.
+- **Precariedad (`PP07H`):** `1` indica que se realiza descuento jubilatorio; `2`, que no. La categoría `2` define la dummy de precariedad.
+- **Ponderador (`PONDERA`):** factor de expansión individual aplicado a conteos y tasas.
+- **Sexo (`CH04`):** `1` varón y `2` mujer.
+- **Edad (`CH06`):** edad en años cumplidos. Se agrupa en 18–29, 30–49 y 50 años o más; menores de 18 y edades sin dato se excluyen de la comparación etaria.
+- **Nivel educativo (`NIVEL_ED`):** `1` primaria incompleta; `2` primaria completa; `3` secundaria incompleta; `4` secundaria completa; `5` superior/universitaria incompleta; `6` superior/universitaria completa; `7` sin instrucción; `9` no sabe/no responde.
+- **Tamaño del establecimiento (`PP04C`):** cantidad de personas que trabajan en total en el establecimiento donde trabaja la persona encuestada; no necesariamente es el tamaño de toda la empresa. Los códigos son: `1` a `5`, una a cinco personas; `6`, de 6 a 10; `7`, de 11 a 25; `8`, de 26 a 40; `9`, de 41 a 100; `10`, de 101 a 200; `11`, de 201 a 500; `12`, más de 500; `99`, no sabe/no responde.
+- **Aglomerado (`AGLOMERADO`):** código geográfico de la EPH vinculado con su nombre para facilitar la lectura.
+
+El tamaño del establecimiento se presenta en tres tramos comparables: hasta 10 personas (códigos 1–6), de 11 a 40 (7–8) y 41 o más (9–12). Las respuestas 99 se conservan como categoría de no respuesta, separada de los tamaños conocidos. En nivel educativo, el código 7 (“sin instrucción”) se distingue conceptualmente del 9 (“no sabe/no responde”).
+
+Cuando no hay bases locales, el procesamiento usa `get_microdata()` del paquete `eph` para facilitar la descarga de los microdatos publicados por INDEC (cuarto trimestre de 2024); no se trata de una API propia del paquete. Si hay bases locales en `bases/`, se procesan esas bases. En todos los casos, la fuente de datos es la EPH del INDEC.
+
+```{r, results='asis'}
 if (nrow(registro_ejecucion) > 0) {
+  ultima_ejecucion <- registro_ejecucion %>%
+    slice_max(run_number, n = 1, with_ties = FALSE) %>%
+    mutate(
+      fuente = case_when(
+        fuente == "EPH_API" ~ "Descarga gestionada por eph; microdatos publicados por INDEC",
+        fuente == "Descarga mediante eph (microdatos de INDEC)" ~
+          "Descarga gestionada por eph; microdatos publicados por INDEC",
+        TRUE ~ fuente
+      )
+    ) %>%
+    transmute(
+      Ejecución = run_number,
+      Fecha = timestamp,
+      `Casos procesados` = formatear_conteo(registros),
+      Fuente = fuente
+    )
+
   knitr::kable(
-    registro_ejecucion %>%
-      slice_max(run_number, n = 1, with_ties = FALSE) %>%
-      select(Ejecución = run_number, Fecha = timestamp, Registros = registros, Fuente = fuente),
-    caption = "Última ejecución del procesamiento"
+    ultima_ejecucion,
+    col.names = c("Ejecución", "Fecha", "Casos", "Fuente"),
+    caption = "Última ejecución registrada",
+    booktabs = TRUE
   )
 } else {
   cat("No se encontró el registro de ejecuciones.")
 }
 ```
 
-## 2. Precariedad por sexo y grupo etario
+## 3. Resultado general
 
-A continuación se observa la tasa de precariedad por sexo y grupo etario:
+La tabla presenta el tamaño de la muestra analítica, la población asalariada estimada con respuesta válida sobre descuento jubilatorio, la población estimada sin descuento y la tasa resultante.
 
-```{r, fig.cap="Tasa de precariedad por sexo y tramo etario"}
+```{r}
+tabla_general <- tasa_general %>%
+  transmute(
+    `Casos muestrales` = formatear_conteo(casos_muestrales),
+    `Población con respuesta válida (estimada)` = formatear_conteo(poblacion_asalariada),
+    `Población sin descuento estimada` = formatear_conteo(precarios_ponderados),
+    `Tasa de precariedad` = formatear_porcentaje(tasa_precariedad)
+  )
+
+knitr::kable(
+  tabla_general,
+  col.names = c("Casos", "Población asalariada est.", "Población precaria est.", "Tasa"),
+  caption = "Indicador general ponderado",
+  booktabs = TRUE
+)
+```
+
+```{r, results='asis'}
+cat(
+  "En el universo analizado, la tasa ponderada de precariedad es ",
+  formatear_porcentaje(tasa_general$tasa_precariedad),
+  ": esa proporción de la población asalariada estimada no declara descuento jubilatorio.",
+  sep = ""
+)
+```
+
+La tasa es una proporción de puestos asalariados y no una medida de toda forma de informalidad laboral. En particular, el indicador se limita a la ausencia de descuento jubilatorio declarada en `PP07H`.
+
+## 4. Precariedad por sexo y grupo etario
+
+El gráfico y la tabla permiten contrastar los tramos de edad dentro de cada categoría de sexo. La tasa se calcula para personas de 18 años o más con edad válida; por ello, el primer grupo no incorpora menores de edad.
+
+```{r, fig.cap="Tasa ponderada de precariedad por sexo y grupo etario", fig.width=6.5}
 plot_sexo_edad <- tasa_demografica %>%
   mutate(
-    grupo_etario = factor(grupo_etario, levels = c("18 a 29 años", "30 a 49 años", "50 años y más"))
+    grupo_etario = factor(
+      grupo_etario,
+      levels = c("18 a 29 años", "30 a 49 años", "50 años y más")
+    )
   )
 
 ggplot(plot_sexo_edad, aes(x = grupo_etario, y = tasa_precariedad, fill = sexo)) +
-  geom_col(position = "dodge") +
-  scale_y_continuous(labels = percent_format(accuracy = 1)) +
-  scale_fill_manual(values = c("Mujer" = "#e74c3c", "Varón" = "#2980b9")) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.72) +
+  geom_text(
+    aes(label = formatear_porcentaje(tasa_precariedad)),
+    position = position_dodge(width = 0.8),
+    vjust = -0.35,
+    size = 3
+  ) +
+  scale_y_continuous(
+    labels = label_percent(accuracy = 1, decimal.mark = ","),
+    limits = c(0, 1.12),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_fill_manual(values = c("Mujer" = "#e74c3c", "Varón" = "#2980b9", "Sin dato" = "#7f8c8d")) +
   labs(
-    title = "Tasa de Precariedad Laboral por Grupo Etario y Sexo",
-    subtitle = "Población asalariada urbana (EPH)",
-    x = "Grupo Etario",
-    y = "Tasa de Precariedad",
+    title = stringr::str_wrap("Tasa de precariedad por grupo etario y sexo", width = 42),
+    x = "Grupo etario",
+    y = "Tasa de precariedad",
     fill = "Sexo"
   ) +
   theme_minimal()
 ```
 
-### Hallazgos Clave
+```{r}
+tabla_demografica <- tasa_demografica %>%
+  transmute(
+    Sexo = sexo,
+    `Grupo etario` = grupo_etario,
+    `Casos muestrales` = formatear_conteo(casos_muestrales),
+    `Población con respuesta válida (estimada)` = formatear_conteo(poblacion_asalariada),
+    `Población sin descuento estimada` = formatear_conteo(precarios_ponderados),
+    `Tasa de precariedad` = formatear_porcentaje(tasa_precariedad)
+  )
 
-- Los jóvenes de 18 a 29 años presentan los niveles más altos de desprotección sociolaboral.
-- La comparación por grupos etarios permite observar cómo varía la tasa de precariedad con la edad.
+knitr::kable(
+  tabla_demografica,
+  col.names = c("Sexo", "Edad", "Casos", "Asalariados est.", "Precarios est.", "Tasa"),
+  caption = "Resultados por sexo y grupo etario",
+  booktabs = TRUE
+)
+```
 
-## 3. Precariedad según Tamaño del Establecimiento
+```{r, results='asis'}
+mayor_demografico <- tasa_demografica %>%
+  select(sexo, grupo_etario, tasa_precariedad) %>%
+  mutate(grupo_etario = as.character(grupo_etario)) %>%
+  pivot_wider(names_from = sexo, values_from = tasa_precariedad)
 
-```{r, fig.cap="Tasa de precariedad según tamaño del establecimiento"}
+tramos_edad <- c("18 a 29 años", "30 a 49 años", "50 años y más")
+comparacion_edad <- mayor_demografico %>%
+  filter(grupo_etario %in% tramos_edad) %>%
+  mutate(
+    diferencia_pp = (Mujer - Varón) * 100,
+    diferencia_texto = paste0(
+      grupo_etario, ": mujeres ", formatear_porcentaje(Mujer),
+      " y varones ", formatear_porcentaje(Varón),
+      " (diferencia de ", format(round(diferencia_pp, 1), decimal.mark = ","),
+      " puntos porcentuales)"
+    )
+  )
+
+tasa_mujeres_jovenes <- comparacion_edad$Mujer[comparacion_edad$grupo_etario == tramos_edad[1]]
+tasa_mujeres_mayores <- comparacion_edad$Mujer[comparacion_edad$grupo_etario == tramos_edad[3]]
+tasa_varones_jovenes <- comparacion_edad$Varón[comparacion_edad$grupo_etario == tramos_edad[1]]
+tasa_varones_mayores <- comparacion_edad$Varón[comparacion_edad$grupo_etario == tramos_edad[3]]
+
+cat(
+  "En los tres tramos la tasa observada es mayor entre las mujeres. ",
+  paste(comparacion_edad$diferencia_texto, collapse = "; "), ". ",
+  "La mayor diferencia por edad se observa entre las personas de 18 a 29 años. ",
+  "Además, la tasa es más alta en ese tramo que en el de 50 años o más: entre las mujeres pasa de ",
+  formatear_porcentaje(tasa_mujeres_jovenes), " a ",
+  formatear_porcentaje(tasa_mujeres_mayores), ", y entre los varones de ",
+  formatear_porcentaje(tasa_varones_jovenes), " a ",
+  formatear_porcentaje(tasa_varones_mayores), ". ",
+  "Estas son diferencias descriptivas entre tasas ponderadas; no permiten por sí solas establecer causas ni significación estadística.",
+  sep = ""
+)
+```
+
+## 5. Precariedad según tamaño del establecimiento
+
+Los tramos se construyen respetando las categorías de `PP04C`: 1–6 representan establecimientos de hasta 10 personas; 7–8, de 11 a 40; y 9–12, de 41 o más. La categoría 99 se conserva en la tabla como no respuesta y no se interpreta como un tamaño conocido.
+
+```{r, fig.cap="Tasa ponderada de precariedad según tamaño del establecimiento", fig.width=6.5}
 plot_tamano <- tasa_tamano %>%
+  filter(tamano_establec != "No sabe / no responde") %>%
   mutate(
     tamano_establec = factor(
       tamano_establec,
+      levels = c("Hasta 10 personas", "11 a 40 personas", "41 personas o más")
+    )
+  )
+
+ggplot(plot_tamano, aes(x = tasa_precariedad, y = tamano_establec)) +
+  geom_col(fill = "#27ae60", width = 0.65) +
+  geom_text(
+    aes(label = formatear_porcentaje(tasa_precariedad)),
+    hjust = -0.12,
+    size = 3.5
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1, decimal.mark = ","),
+    limits = c(0, 1.12),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  labs(
+    title = stringr::str_wrap("Tasa de precariedad según tamaño del establecimiento", width = 42),
+    x = "Tasa de precariedad",
+    y = NULL
+  ) +
+  theme_minimal()
+```
+
+```{r}
+tabla_tamano <- tasa_tamano %>%
+  transmute(
+    `Tamaño del establecimiento` = tamano_establec,
+    `Casos muestrales` = formatear_conteo(casos_muestrales),
+    `Población con respuesta válida (estimada)` = formatear_conteo(poblacion_asalariada),
+    `Población sin descuento estimada` = formatear_conteo(precarios_ponderados),
+    `Tasa de precariedad` = formatear_porcentaje(tasa_precariedad)
+  )
+
+knitr::kable(
+  tabla_tamano,
+  col.names = c("Tamaño", "Casos", "Asalariados est.", "Precarios est.", "Tasa"),
+  caption = "Resultados por tamaño del establecimiento",
+  booktabs = TRUE
+)
+```
+
+```{r, results='asis'}
+mayor_tamano <- plot_tamano %>%
+  arrange(match(
+    as.character(tamano_establec),
+    c("Hasta 10 personas", "11 a 40 personas", "41 personas o más")
+  ))
+
+cat(
+  "La tasa disminuye a medida que se comparan los tramos agrupados de mayor cantidad de personas en el establecimiento: ",
+  paste0(
+    as.character(mayor_tamano$tamano_establec), " (",
+    formatear_porcentaje(mayor_tamano$tasa_precariedad), ")",
+    collapse = "; "
+  ), ". La diferencia entre los extremos —hasta 10 personas y 41 o más— es de ",
+  format(
+    round(diff(range(mayor_tamano$tasa_precariedad)) * 100, 1),
+    decimal.mark = ","
+  ),
+  " puntos porcentuales. La categoría “No sabe/no responde” se muestra en la tabla, pero no se interpreta como un tamaño conocido. ",
+  "El patrón describe una asociación en estos datos y no demuestra que el tamaño del establecimiento cause la precariedad.",
+  sep = ""
+)
+```
+
+## 6. Precariedad y nivel educativo
+
+La recodificación conserva la distinción entre “sin instrucción” (`NIVEL_ED = 7`) y “no sabe/no responde” (`NIVEL_ED = 9`). Para facilitar la comparación, los niveles 1, 2, 3 y 7 se agrupan como hasta secundario incompleto; 4 y 5 como secundario completo o superior incompleto; y 6 como superior/universitario completo.
+
+```{r, fig.cap="Tasa ponderada de precariedad por nivel educativo", fig.width=6.5}
+plot_educacion <- tasa_educacion %>%
+  filter(nivel_educativo != "No sabe / no responde") %>%
+  mutate(
+    nivel_educativo = factor(
+      nivel_educativo,
       levels = c(
-        "Pequeño (hasta 10 pers.)",
-        "Mediano (11 a 50 pers.)",
-        "Grande (más de 50 pers.)",
-        "NS/NR"
+        "Hasta secundario incompleto",
+        "Secundario completo / superior incompleto",
+        "Superior universitario completo"
       )
     )
   )
 
-ggplot(plot_tamano, aes(x = reorder(tamano_establec, -tasa_precariedad), y = tasa_precariedad)) +
-  geom_col(fill = "#27ae60", width = 0.6) +
-  geom_text(aes(label = percent(tasa_precariedad, accuracy = 0.1)), vjust = -0.5) +
-  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+ggplot(plot_educacion, aes(x = tasa_precariedad, y = nivel_educativo)) +
+  geom_col(fill = "#8e44ad", width = 0.65) +
+  geom_text(
+    aes(label = formatear_porcentaje(tasa_precariedad)),
+    hjust = -0.12,
+    size = 3.5
+  ) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1, decimal.mark = ","),
+    limits = c(0, 1.12),
+    expand = expansion(mult = c(0, 0))
+  ) +
   labs(
-    title = "Tasa de Precariedad según Tamaño de la Empresa",
-    x = "Tamaño del Establecimiento",
-    y = "Tasa de Precariedad"
+    title = stringr::str_wrap("Tasa de precariedad por nivel educativo", width = 42),
+    x = "Tasa de precariedad",
+    y = NULL
   ) +
   theme_minimal()
 ```
 
-La comparación por tamaño del establecimiento permite identificar diferencias en la proporción de puestos sin descuento jubilatorio.
-
-## 4. Indicadores principales
-
 ```{r}
+tabla_educacion <- tasa_educacion %>%
+  transmute(
+    `Nivel educativo` = nivel_educativo,
+    `Casos muestrales` = formatear_conteo(casos_muestrales),
+    `Población con respuesta válida (estimada)` = formatear_conteo(poblacion_asalariada),
+    `Población sin descuento estimada` = formatear_conteo(precarios_ponderados),
+    `Tasa de precariedad` = formatear_porcentaje(tasa_precariedad)
+  )
+
 knitr::kable(
-  tasa_general %>%
-    mutate(
-      poblacion_asalariada = format(round(poblacion_asalariada, 0), big.mark = "."),
-      precarios_ponderados = format(round(precarios_ponderados, 0), big.mark = "."),
-      tasa_precariedad = scales::percent(tasa_precariedad, accuracy = 0.1)
-    ),
-  col.names = c(
-    "Población asalariada",
-    "Precarios ponderados",
-    "Tasa de precariedad"
-  ),
-  caption = "Resultado general del indicador ponderado"
+  tabla_educacion,
+  col.names = c("Nivel educativo", "Casos", "Asalariados est.", "Precarios est.", "Tasa"),
+  caption = "Resultados por nivel educativo",
+  booktabs = TRUE
 )
 ```
 
-## 5. Precariedad por aglomerado
+```{r, results='asis'}
+mayor_educacion <- plot_educacion %>%
+  arrange(desc(tasa_precariedad))
 
-```{r, fig.cap="Tasa de precariedad por aglomerado urbano"}
-ggplot(
-  tasa_aglomerado,
-  aes(x = reorder(as.factor(AGLOMERADO), tasa_precariedad), y = tasa_precariedad)
-) +
-  geom_col(fill = "#247a78", width = 0.7) +
-  coord_flip() +
-  scale_y_continuous(labels = percent_format(accuracy = 1)) +
-  labs(
-    title = "Tasa de precariedad por aglomerado",
-    x = "Código de aglomerado",
-    y = "Tasa de precariedad"
-  ) +
-  theme_minimal()
+cat(
+  "Se observa un gradiente descriptivo: la tasa es mayor en “",
+  as.character(mayor_educacion$nivel_educativo[1]), "” (",
+  formatear_porcentaje(mayor_educacion$tasa_precariedad[1]),
+  "), intermedia en “", as.character(mayor_educacion$nivel_educativo[2]),
+  "” (", formatear_porcentaje(mayor_educacion$tasa_precariedad[2]),
+  ") y menor en “", as.character(mayor_educacion$nivel_educativo[3]),
+  "” (", formatear_porcentaje(mayor_educacion$tasa_precariedad[3]),
+  "). La diferencia entre las categorías extremas es de ",
+  format(
+    round(diff(range(mayor_educacion$tasa_precariedad)) * 100, 1),
+    decimal.mark = ","
+  ),
+  " puntos porcentuales. Como las categorías agrupan distintos niveles educativos y el análisis es descriptivo, este patrón no establece una relación causal entre educación y precariedad.",
+  sep = ""
+)
 ```
 
-## 6. Conclusión
+## 7. Precariedad por aglomerado
 
-Los resultados permiten comparar la precariedad laboral entre grupos de edad, sexos, tamaños de establecimiento y aglomerados urbanos. Estas diferencias ayudan a identificar segmentos con mayor desprotección y aportan evidencia para orientar el análisis y las políticas del mercado de trabajo.
+Los códigos de `AGLOMERADO` se presentan con los nombres del diccionario de la EPH. El gráfico ordena los aglomerados por tasa para facilitar la comparación; las diferencias descriptivas no implican por sí solas una relación causal.
 
----
+```{r, fig.cap="Tasa ponderada de precariedad por aglomerado urbano", fig.height=5.1, fig.width=6.2}
+ggplot(
+  tasa_aglomerado,
+  aes(x = tasa_precariedad, y = reorder(nom_aglo, tasa_precariedad))
+) +
+  geom_col(fill = "#247a78", width = 0.72) +
+  scale_x_continuous(
+    labels = label_percent(accuracy = 1, decimal.mark = ","),
+    expand = expansion(mult = c(0, 0.08))
+  ) +
+  labs(
+    title = "Tasa de precariedad por aglomerado",
+    x = "Tasa de precariedad",
+    y = "Aglomerado"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6.5))
+```
 
+```{r, results='asis'}
+mayor_aglomerado <- tasa_aglomerado %>%
+  arrange(desc(tasa_precariedad))
+menor_aglomerado <- tasa_aglomerado %>%
+  arrange(tasa_precariedad)
+
+cat(
+  "Las tasas varían entre los aglomerados. Los tres valores más altos corresponden a ",
+  paste0(
+    mayor_aglomerado$nom_aglo[1:3], " (",
+    formatear_porcentaje(mayor_aglomerado$tasa_precariedad[1:3]), ")",
+    collapse = "; "
+  ),
+  "; los más bajos, a ",
+  paste0(
+    menor_aglomerado$nom_aglo[1:3], " (",
+    formatear_porcentaje(menor_aglomerado$tasa_precariedad[1:3]), ")",
+    collapse = "; "
+  ),
+  ". El rango entre el valor máximo y el mínimo es de ",
+  format(
+    round(diff(range(tasa_aglomerado$tasa_precariedad)) * 100, 1),
+    decimal.mark = ","
+  ),
+  " puntos porcentuales. La cantidad de casos muestrales también varía entre aglomerados; por eso, estas diferencias deben leerse como descriptivas y no como evidencia de causalidad ni de diferencias estadísticamente significativas.",
+  sep = ""
+)
+```
+
+## 8. Conclusiones y alcance
+
+El indicador permite describir qué proporción ponderada de las personas ocupadas asalariadas no declara descuento jubilatorio y cómo varía entre los grupos analizados. Las tablas explicitan tanto la estimación poblacional como la cantidad de observaciones muestrales, mientras que los gráficos facilitan la lectura comparativa.
+
+Los resultados son descriptivos y se refieren al período y a las bases efectivamente procesadas. No miden por sí solos todas las dimensiones de la informalidad, no establecen causalidad y no incorporan intervalos de confianza ni pruebas de significación. Las categorías sin respuesta se mantienen identificadas o se excluyen del análisis específico cuando no es posible asignarlas a un grupo sustantivo.

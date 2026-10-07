@@ -1,2 +1,4 @@
-"run_number","timestamp","registros","fuente"
-1,2026-09-29 22:10:03.439453,15292,"EPH_API"
+run_number,timestamp,registros,fuente
+1,2026-09-29T22:10:03Z,15292,EPH_API
+2,2026-10-07T17:21:40Z,15292,Descarga mediante eph (microdatos de INDEC)
+3,2026-10-07T17:53:55Z,15292,Descarga mediante eph (microdatos de INDEC)
